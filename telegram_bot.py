@@ -50,8 +50,8 @@ def feedback_markup(answer_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("👍 Helpful", callback_data=f"feedback:up:{answer_id}"),
-                InlineKeyboardButton("👎 Not helpful", callback_data=f"feedback:down:{answer_id}"),
+                InlineKeyboardButton("👍", callback_data=f"feedback:up:{answer_id}"),
+                InlineKeyboardButton("👎", callback_data=f"feedback:down:{answer_id}"),
             ]
         ]
     )
