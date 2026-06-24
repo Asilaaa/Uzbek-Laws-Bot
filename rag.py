@@ -5,7 +5,15 @@ from dataclasses import dataclass
 
 from psycopg import sql
 
-from common import CHAT_MODEL, TABLE_NAME, ensure_schema, embed, get_async_openai_client, get_connection
+from common import (
+    CHAT_MODEL,
+    LAW_DOCUMENTS_TABLE,
+    TABLE_NAME,
+    embed,
+    ensure_schema,
+    get_async_openai_client,
+    get_connection,
+)
 
 RAG_TOP_K = int(os.getenv("RAG_TOP_K", "5"))
 MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "12000"))
@@ -28,6 +36,12 @@ class SearchResult:
     document_name: str
     chunk_text: str
     similarity: float
+
+
+@dataclass(slots=True)
+class SourceLink:
+    document_name: str
+    source_url: str | None
 
 
 def search_chunks(query: str, top_k: int = RAG_TOP_K, document_name: str | None = None) -> list[SearchResult]:
@@ -94,7 +108,7 @@ def build_messages(question: str, chunks: list[SearchResult]) -> list[dict[str, 
         "1. Answer in the same language as the user if possible.\n"
         "2. Prefer the retrieved context over general knowledge.\n"
         "3. If the context is incomplete, say what is missing.\n"
-        "4. End with a short bullet list titled 'Sources' naming the documents you used."
+        "4. Do not add a separate sources section at the end; it will be added by the application."
     )
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -119,15 +133,39 @@ async def stream_completion(messages: list[dict[str, str]]):
             yield delta
 
 
-def summarize_sources(chunks: list[SearchResult]) -> str:
-    if not chunks:
-        return "No sources retrieved"
-
-    seen: list[str] = []
+def get_source_links(chunks: list[SearchResult]) -> list[SourceLink]:
+    document_names: list[str] = []
     for chunk in chunks:
-        if chunk.document_name not in seen:
-            seen.append(chunk.document_name)
-    return ", ".join(seen)
+        if chunk.document_name not in document_names:
+            document_names.append(chunk.document_name)
+
+    if not document_names:
+        return []
+
+    with get_connection() as conn:
+        ensure_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    """
+                    SELECT document_name, source_url
+                    FROM {table_name}
+                    WHERE document_name = ANY(%s)
+                    """
+                ).format(table_name=sql.Identifier(LAW_DOCUMENTS_TABLE)),
+                (document_names,),
+            )
+            rows = cur.fetchall()
+
+    url_by_name = {document_name: source_url for document_name, source_url in rows}
+    return [SourceLink(document_name=name, source_url=url_by_name.get(name)) for name in document_names]
+
+
+def summarize_sources(chunks: list[SearchResult]) -> str:
+    links = get_source_links(chunks)
+    if not links:
+        return "No sources retrieved"
+    return ", ".join(link.document_name for link in links)
 
 
 def save_answer_record(

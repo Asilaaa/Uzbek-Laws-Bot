@@ -13,6 +13,16 @@ CREATE INDEX IF NOT EXISTS law_chunks_document_name_idx
 CREATE INDEX IF NOT EXISTS law_chunks_embedding_hnsw_idx
     ON law_chunks USING hnsw (embedding vector_cosine_ops);
 
+CREATE TABLE IF NOT EXISTS law_documents (
+    id bigserial PRIMARY KEY,
+    document_name text UNIQUE NOT NULL,
+    object_key text,
+    source_url text
+);
+
+CREATE INDEX IF NOT EXISTS law_documents_document_name_idx
+    ON law_documents (document_name);
+
 CREATE TABLE IF NOT EXISTS law_answers (
     answer_id text PRIMARY KEY,
     created_at timestamptz NOT NULL DEFAULT now(),

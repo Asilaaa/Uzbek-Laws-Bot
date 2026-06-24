@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
 import time
@@ -19,6 +20,7 @@ from telegram.ext import (
 
 from rag import (
     build_messages,
+    get_source_links,
     save_answer_record,
     save_feedback,
     search_chunks,
@@ -46,6 +48,33 @@ def trim_for_telegram(text: str, limit: int = TELEGRAM_MAX_TEXT) -> str:
     return text[: limit - 20].rstrip() + "\n\n[truncated]"
 
 
+def build_streaming_text(answer_text: str) -> str:
+    cleaned = answer_text.strip()
+    if not cleaned:
+        return "⏳ Generating answer..."
+    return f"⚖️ Answer\n\n{cleaned}\n\n⏳ Generating..."
+
+
+def build_final_text(answer_text: str, source_links) -> str:
+    answer_block = html.escape(answer_text.strip() or "No answer generated.")
+    parts = [f"<b>⚖️ Answer</b>\n\n{answer_block}"]
+
+    if source_links:
+        source_lines = []
+        for link in source_links:
+            label = html.escape(link.document_name)
+            if link.source_url:
+                source_lines.append(f'• <a href="{html.escape(link.source_url, quote=True)}">{label}</a>')
+            else:
+                source_lines.append(f"• {label}")
+        parts.append("<b>📎 Sources</b>\n" + "\n".join(source_lines))
+    else:
+        parts.append("<b>📎 Sources</b>\nNo sources found")
+
+    parts.append("<b>Was this helpful?</b>")
+    return "\n\n".join(parts)
+
+
 def feedback_markup(answer_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
@@ -57,9 +86,14 @@ def feedback_markup(answer_id: str) -> InlineKeyboardMarkup:
     )
 
 
-async def safe_edit_message(message, text: str, reply_markup=None) -> None:
+async def safe_edit_message(message, text: str, reply_markup=None, parse_mode: str | None = None) -> None:
     try:
-        await message.edit_text(trim_for_telegram(text), reply_markup=reply_markup)
+        await message.edit_text(
+            trim_for_telegram(text),
+            reply_markup=reply_markup,
+            parse_mode=parse_mode,
+            disable_web_page_preview=True,
+        )
     except BadRequest as exc:
         if "Message is not modified" not in str(exc):
             raise
@@ -102,7 +136,7 @@ async def question_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         messages = build_messages(question, chunks)
 
         streamed_text = ""
-        visible_text = "Generating answer..."
+        visible_text = "⏳ Generating answer..."
         last_edit_at = 0.0
         last_len = 0
 
@@ -116,13 +150,14 @@ async def question_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             growth_ok = len(streamed_text) - last_len >= STREAM_MIN_CHARS_PER_EDIT
 
             if time_ok or growth_ok:
-                visible_text = streamed_text + "\n\n⏳ Generating..."
+                visible_text = build_streaming_text(streamed_text)
                 await safe_edit_message(status_message, visible_text)
                 last_edit_at = now
                 last_len = len(streamed_text)
 
         final_answer = streamed_text.strip() or "No answer generated."
-        sources = summarize_sources(chunks)
+        source_links = await asyncio.to_thread(get_source_links, chunks)
+        sources = ", ".join(link.document_name for link in source_links) if source_links else summarize_sources(chunks)
         answer_id = uuid.uuid4().hex
 
         await asyncio.to_thread(
@@ -136,16 +171,13 @@ async def question_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             sources,
         )
 
-        final_text = (
-            f"{final_answer}\n\n"
-            f"Sources: {sources}\n\n"
-            f"Was this helpful?"
-        )
+        final_text = build_final_text(final_answer, source_links)
 
         await safe_edit_message(
             status_message,
             final_text,
             reply_markup=feedback_markup(answer_id),
+            parse_mode="HTML",
         )
 
     except Exception:

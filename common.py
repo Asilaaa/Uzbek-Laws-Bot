@@ -17,6 +17,7 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 EMBEDDING_DIMENSIONS = int(os.getenv("EMBEDDING_DIMENSIONS", "1536"))
 CHAT_MODEL = os.getenv("CHAT_MODEL", "gpt-4.1-mini")
 TABLE_NAME = os.getenv("PGVECTOR_TABLE", "law_chunks")
+LAW_DOCUMENTS_TABLE = os.getenv("LAW_DOCUMENTS_TABLE", "law_documents")
 
 _client: OpenAI | None = None
 _async_client: AsyncOpenAI | None = None
@@ -91,6 +92,26 @@ def ensure_schema(conn: psycopg.Connection) -> None:
             ).format(
                 index_name=sql.Identifier(index_name),
                 table_name=sql.Identifier(TABLE_NAME),
+            )
+        )
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE TABLE IF NOT EXISTS {table_name} (
+                    id bigserial PRIMARY KEY,
+                    document_name text UNIQUE NOT NULL,
+                    object_key text,
+                    source_url text
+                )
+                """
+            ).format(table_name=sql.Identifier(LAW_DOCUMENTS_TABLE))
+        )
+        cur.execute(
+            sql.SQL(
+                "CREATE INDEX IF NOT EXISTS {index_name} ON {table_name} (document_name)"
+            ).format(
+                index_name=sql.Identifier(f"{LAW_DOCUMENTS_TABLE}_document_name_idx"),
+                table_name=sql.Identifier(LAW_DOCUMENTS_TABLE),
             )
         )
         cur.execute(
