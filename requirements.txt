@@ -1,4 +1,5 @@
 lxml==6.1.1
+minio==7.2.18
 openai==2.43.0
 psycopg[binary]==3.3.4
 python-docx==1.2.0
