@@ -184,41 +184,94 @@ def judge_answer(
     )
 
 
+def parse_case_payload(payload: dict[str, Any], source_label: str, default_case_id: str) -> EvalCase:
+    question = str(payload.get("question", "")).strip()
+    if not question:
+        raise ValueError(f"Missing question in {source_label}")
+
+    case_id = str(payload.get("id") or default_case_id)
+    expected_documents = payload.get("expected_documents") or []
+    if not isinstance(expected_documents, list):
+        raise ValueError(f"expected_documents must be a list in {source_label}")
+
+    metadata = payload.get("metadata")
+    if metadata is not None and not isinstance(metadata, dict):
+        raise ValueError(f"metadata must be an object in {source_label}")
+
+    reference_answer = payload.get("reference_answer")
+    if reference_answer is not None:
+        reference_answer = str(reference_answer).strip() or None
+
+    return EvalCase(
+        case_id=case_id,
+        question=question,
+        expected_documents=[str(item) for item in expected_documents],
+        reference_answer=reference_answer,
+        metadata=metadata,
+    )
+
+
 def load_cases(path: Path) -> list[EvalCase]:
+    content = path.read_text(encoding="utf-8").strip()
+    if not content:
+        return []
+
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        parsed = None
+    else:
+        if isinstance(parsed, list):
+            return [
+                parse_case_payload(item, f"{path} item {index}", f"case-{index}")
+                for index, item in enumerate(parsed, start=1)
+            ]
+        if isinstance(parsed, dict):
+            return [parse_case_payload(parsed, str(path), "case-1")]
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    jsonl_candidates = [line.strip() for line in lines if line.strip() and not line.strip().startswith("#")]
+    if jsonl_candidates:
+        try:
+            return [
+                parse_case_payload(json.loads(line), f"{path} line {index}", f"case-{index}")
+                for index, line in enumerate(jsonl_candidates, start=1)
+            ]
+        except json.JSONDecodeError:
+            pass
+
     cases: list[EvalCase] = []
+    buffer: list[str] = []
+    block_start_line = 1
+
     with path.open("r", encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
-            raw = line.strip()
-            if not raw or raw.startswith("#"):
+            stripped = line.strip()
+            if not stripped:
+                if buffer:
+                    raw = "\n".join(buffer)
+                    payload = json.loads(raw)
+                    cases.append(
+                        parse_case_payload(payload, f"{path} block starting at line {block_start_line}", f"case-{len(cases) + 1}")
+                    )
+                    buffer = []
                 continue
 
-            payload = json.loads(raw)
-            question = str(payload.get("question", "")).strip()
-            if not question:
-                raise ValueError(f"Missing question at line {line_number} in {path}")
+            if not buffer:
+                block_start_line = line_number
 
-            case_id = str(payload.get("id") or f"case-{line_number}")
-            expected_documents = payload.get("expected_documents") or []
-            if not isinstance(expected_documents, list):
-                raise ValueError(f"expected_documents must be a list at line {line_number} in {path}")
+            if stripped.startswith("#") and not buffer:
+                continue
 
-            metadata = payload.get("metadata")
-            if metadata is not None and not isinstance(metadata, dict):
-                raise ValueError(f"metadata must be an object at line {line_number} in {path}")
+            buffer.append(line)
 
-            reference_answer = payload.get("reference_answer")
-            if reference_answer is not None:
-                reference_answer = str(reference_answer).strip() or None
+    if buffer:
+        raw = "\n".join(buffer)
+        payload = json.loads(raw)
+        cases.append(
+            parse_case_payload(payload, f"{path} block starting at line {block_start_line}", f"case-{len(cases) + 1}")
+        )
 
-            cases.append(
-                EvalCase(
-                    case_id=case_id,
-                    question=question,
-                    expected_documents=[str(item) for item in expected_documents],
-                    reference_answer=reference_answer,
-                    metadata=metadata,
-                )
-            )
     return cases
 
 
