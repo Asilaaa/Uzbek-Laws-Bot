@@ -4,6 +4,8 @@ CREATE TABLE IF NOT EXISTS law_chunks (
     id bigserial PRIMARY KEY,
     document_name text NOT NULL,
     chunk_text text NOT NULL,
+    page_start integer,
+    page_end integer,
     embedding vector(1536) NOT NULL
 );
 

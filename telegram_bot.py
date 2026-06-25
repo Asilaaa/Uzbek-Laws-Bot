@@ -62,9 +62,9 @@ def build_final_text(answer_text: str, source_links) -> str:
     if source_links:
         source_lines = []
         for link in source_links:
-            label = html.escape(link.document_name)
-            if link.source_url:
-                source_lines.append(f'• <a href="{html.escape(link.source_url, quote=True)}">{label}</a>')
+            label = html.escape(link.display_name)
+            if link.resolved_url:
+                source_lines.append(f'• <a href="{html.escape(link.resolved_url, quote=True)}">{label}</a>')
             else:
                 source_lines.append(f"• {label}")
         parts.append("<b>📎 Sources</b>\n" + "\n".join(source_lines))
@@ -157,7 +157,7 @@ async def question_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         final_answer = streamed_text.strip() or "No answer generated."
         source_links = await asyncio.to_thread(get_source_links, chunks)
-        sources = ", ".join(link.document_name for link in source_links) if source_links else summarize_sources(chunks)
+        sources = ", ".join(link.display_name for link in source_links) if source_links else summarize_sources(chunks)
         answer_id = uuid.uuid4().hex
 
         await asyncio.to_thread(

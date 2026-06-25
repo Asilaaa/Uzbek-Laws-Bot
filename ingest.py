@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from docx import Document
@@ -15,6 +17,16 @@ from psycopg import sql
 from common import DEFAULT_FOLDER, TABLE_NAME, embed, ensure_schema, get_connection
 
 SUPPORTED_SUFFIXES = {".doc", ".docx", ".html", ".htm", ".txt"}
+LAW_PDF_DIR = Path(os.getenv("LAW_PDF_DIR", str(Path.home() / "Documents" / "laws")))
+PDFTOTEXT_BIN = shutil.which("pdftotext")
+PDFINFO_BIN = shutil.which("pdfinfo")
+
+
+@dataclass(slots=True)
+class ChunkRecord:
+    text: str
+    page_start: int | None = None
+    page_end: int | None = None
 
 
 def normalize_text(text: str) -> str:
@@ -110,7 +122,53 @@ def load_document(path: Path) -> str:
     raise ValueError(f"Unsupported file type: {path.suffix}")
 
 
-def chunk_text(text: str, chunk_size: int = 1500, chunk_overlap: int = 200) -> list[str]:
+def get_matching_pdf_path(file_path: Path) -> Path | None:
+    pdf_path = LAW_PDF_DIR / f"{file_path.stem}.pdf"
+    return pdf_path if pdf_path.exists() else None
+
+
+def extract_pdf_page_count(pdf_path: Path) -> int:
+    if not PDFINFO_BIN:
+        raise RuntimeError("pdfinfo is required for page-aware citations. Install poppler-utils.")
+
+    result = subprocess.run(
+        [PDFINFO_BIN, str(pdf_path)],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        errors="ignore",
+    )
+    match = re.search(r"^Pages:\s+(\d+)\s*$", result.stdout, flags=re.MULTILINE)
+    if not match:
+        raise RuntimeError(f"Unable to determine page count for PDF: {pdf_path}")
+    return int(match.group(1))
+
+
+def extract_pdf_pages(pdf_path: Path) -> list[tuple[int, str]]:
+    if not PDFTOTEXT_BIN:
+        raise RuntimeError("pdftotext is required for page-aware citations. Install poppler-utils.")
+
+    page_count = extract_pdf_page_count(pdf_path)
+    pages: list[tuple[int, str]] = []
+
+    for page_number in range(1, page_count + 1):
+        result = subprocess.run(
+            [PDFTOTEXT_BIN, "-f", str(page_number), "-l", str(page_number), str(pdf_path), "-"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="ignore",
+        )
+        normalized = normalize_text(result.stdout)
+        if normalized:
+            pages.append((page_number, normalized))
+
+    return pages
+
+
+def chunk_text_with_spans(text: str, chunk_size: int = 1500, chunk_overlap: int = 200) -> list[tuple[str, int, int]]:
     if chunk_overlap >= chunk_size:
         raise ValueError("chunk_overlap must be smaller than chunk_size")
 
@@ -118,7 +176,7 @@ def chunk_text(text: str, chunk_size: int = 1500, chunk_overlap: int = 200) -> l
     if not text:
         return []
 
-    chunks = []
+    chunks: list[tuple[str, int, int]] = []
     start = 0
     text_len = len(text)
 
@@ -135,7 +193,11 @@ def chunk_text(text: str, chunk_size: int = 1500, chunk_overlap: int = 200) -> l
 
         chunk = text[start:end].strip()
         if chunk:
-            chunks.append(chunk)
+            leading_trim = len(text[start:end]) - len(text[start:end].lstrip())
+            trailing_trim = len(text[start:end]) - len(text[start:end].rstrip())
+            chunk_start = start + leading_trim
+            chunk_end = end - trailing_trim
+            chunks.append((chunk, chunk_start, chunk_end))
 
         if end >= text_len:
             break
@@ -143,6 +205,57 @@ def chunk_text(text: str, chunk_size: int = 1500, chunk_overlap: int = 200) -> l
         start = max(end - chunk_overlap, start + 1)
 
     return chunks
+
+
+def chunk_text(text: str, chunk_size: int = 1500, chunk_overlap: int = 200) -> list[str]:
+    return [chunk for chunk, _, _ in chunk_text_with_spans(text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)]
+
+
+def pages_for_span(span_start: int, span_end: int, page_spans: list[tuple[int, int, int]]) -> tuple[int | None, int | None]:
+    matching_pages = [page_number for page_number, start, end in page_spans if not (span_end <= start or span_start >= end)]
+    if not matching_pages:
+        return None, None
+    return matching_pages[0], matching_pages[-1]
+
+
+def build_pdf_backed_chunks(file_path: Path, chunk_size: int, chunk_overlap: int) -> list[ChunkRecord]:
+    pdf_path = get_matching_pdf_path(file_path)
+    if pdf_path is None:
+        return []
+
+    pages = extract_pdf_pages(pdf_path)
+    if not pages:
+        return []
+
+    combined_parts: list[str] = []
+    page_spans: list[tuple[int, int, int]] = []
+    cursor = 0
+
+    for index, (page_number, page_text) in enumerate(pages):
+        if index > 0:
+            separator = "\n\n"
+            combined_parts.append(separator)
+            cursor += len(separator)
+
+        combined_parts.append(page_text)
+        start = cursor
+        cursor += len(page_text)
+        end = cursor
+        page_spans.append((page_number, start, end))
+
+    combined_text = "".join(combined_parts)
+    chunk_spans = chunk_text_with_spans(combined_text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+
+    records: list[ChunkRecord] = []
+    for chunk_text_value, span_start, span_end in chunk_spans:
+        page_start, page_end = pages_for_span(span_start, span_end, page_spans)
+        records.append(ChunkRecord(text=chunk_text_value, page_start=page_start, page_end=page_end))
+    return records
+
+
+def build_plain_chunks(file_path: Path, chunk_size: int, chunk_overlap: int) -> list[ChunkRecord]:
+    text = load_document(file_path)
+    return [ChunkRecord(text=chunk) for chunk in chunk_text(text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)]
 
 
 def ingest_file(
@@ -154,13 +267,19 @@ def ingest_file(
 ) -> int:
     print(f"Processing: {file_path}")
 
-    text = load_document(file_path)
-    if not text.strip():
-        print(f"Skipped empty document: {file_path.name}")
-        return 0
+    pdf_path = get_matching_pdf_path(file_path)
+    chunks = build_pdf_backed_chunks(file_path, chunk_size=chunk_size, chunk_overlap=chunk_overlap) if pdf_path else []
 
-    chunks = chunk_text(text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-    print(f"  extracted_chars={len(text)} chunks={len(chunks)}")
+    if chunks:
+        extracted_chars = sum(len(chunk.text) for chunk in chunks)
+        print(f"  extracted_chars={extracted_chars} chunks={len(chunks)} page_backed=yes pdf={pdf_path.name}")
+    else:
+        text = load_document(file_path)
+        if not text.strip():
+            print(f"Skipped empty document: {file_path.name}")
+            return 0
+        chunks = build_plain_chunks(file_path, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        print(f"  extracted_chars={len(text)} chunks={len(chunks)} page_backed=no")
 
     if dry_run:
         return len(chunks)
@@ -178,15 +297,15 @@ def ingest_file(
                 (document_name,),
             )
             for chunk in chunks:
-                vector = embed(chunk)
+                vector = embed(chunk.text)
                 cur.execute(
                     sql.SQL(
                         """
-                        INSERT INTO {table_name} (document_name, chunk_text, embedding)
-                        VALUES (%s, %s, %s::vector)
+                        INSERT INTO {table_name} (document_name, chunk_text, page_start, page_end, embedding)
+                        VALUES (%s, %s, %s, %s, %s::vector)
                         """
                     ).format(table_name=sql.Identifier(TABLE_NAME)),
-                    (document_name, chunk, vector),
+                    (document_name, chunk.text, chunk.page_start, chunk.page_end, vector),
                 )
 
     print(f"Done: {document_name}")

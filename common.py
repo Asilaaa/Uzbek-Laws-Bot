@@ -73,10 +73,22 @@ def ensure_schema(conn: psycopg.Connection) -> None:
                     id bigserial PRIMARY KEY,
                     document_name text NOT NULL,
                     chunk_text text NOT NULL,
+                    page_start integer,
+                    page_end integer,
                     embedding vector({EMBEDDING_DIMENSIONS}) NOT NULL
                 )
                 """
             ).format(table_name=sql.Identifier(TABLE_NAME))
+        )
+        cur.execute(
+            sql.SQL("ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS page_start integer").format(
+                table_name=sql.Identifier(TABLE_NAME)
+            )
+        )
+        cur.execute(
+            sql.SQL("ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS page_end integer").format(
+                table_name=sql.Identifier(TABLE_NAME)
+            )
         )
         cur.execute(
             sql.SQL(

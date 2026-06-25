@@ -30,7 +30,8 @@ def main() -> None:
         preview = result.chunk_text[: args.max_chars].strip()
         if len(result.chunk_text) > args.max_chars:
             preview += "..."
-        print(f"[{index}] {result.document_name}  score={result.similarity:.4f}")
+        location = f"  {result.page_label}" if result.page_label else ""
+        print(f"[{index}] {result.document_name}{location}  score={result.similarity:.4f}")
         print(preview)
         print()
 

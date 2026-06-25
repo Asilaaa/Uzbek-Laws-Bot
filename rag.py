@@ -37,12 +37,46 @@ class SearchResult:
     document_name: str
     chunk_text: str
     similarity: float
+    page_start: int | None = None
+    page_end: int | None = None
+
+    @property
+    def page_label(self) -> str | None:
+        if self.page_start is None:
+            return None
+        if self.page_end is None or self.page_end == self.page_start:
+            return f"page {self.page_start}"
+        return f"pages {self.page_start}-{self.page_end}"
 
 
 @dataclass(slots=True)
 class SourceLink:
     document_name: str
     source_url: str | None
+    page_start: int | None = None
+    page_end: int | None = None
+
+    @property
+    def page_label(self) -> str | None:
+        if self.page_start is None:
+            return None
+        if self.page_end is None or self.page_end == self.page_start:
+            return f"page {self.page_start}"
+        return f"pages {self.page_start}-{self.page_end}"
+
+    @property
+    def resolved_url(self) -> str | None:
+        if not self.source_url:
+            return None
+        if self.page_start is None:
+            return self.source_url
+        return f"{self.source_url}#page={self.page_start}"
+
+    @property
+    def display_name(self) -> str:
+        if not self.page_label:
+            return self.document_name
+        return f"{self.document_name} ({self.page_label})"
 
 
 def search_chunks(query: str, top_k: int = RAG_TOP_K, document_name: str | None = None) -> list[SearchResult]:
@@ -55,7 +89,7 @@ def search_chunks(query: str, top_k: int = RAG_TOP_K, document_name: str | None 
                 cur.execute(
                     sql.SQL(
                         """
-                        SELECT document_name, chunk_text, 1 - (embedding <=> %s::vector) AS similarity
+                        SELECT document_name, chunk_text, 1 - (embedding <=> %s::vector) AS similarity, page_start, page_end
                         FROM {table_name}
                         WHERE document_name ILIKE %s
                         ORDER BY embedding <=> %s::vector
@@ -68,7 +102,7 @@ def search_chunks(query: str, top_k: int = RAG_TOP_K, document_name: str | None 
                 cur.execute(
                     sql.SQL(
                         """
-                        SELECT document_name, chunk_text, 1 - (embedding <=> %s::vector) AS similarity
+                        SELECT document_name, chunk_text, 1 - (embedding <=> %s::vector) AS similarity, page_start, page_end
                         FROM {table_name}
                         ORDER BY embedding <=> %s::vector
                         LIMIT %s
@@ -86,9 +120,11 @@ def build_context(chunks: list[SearchResult], max_context_chars: int = MAX_CONTE
     current_size = 0
 
     for index, chunk in enumerate(chunks, start=1):
+        location_line = f"Location: {chunk.page_label}\n" if chunk.page_label else ""
         section = (
             f"Source {index}\n"
             f"Document: {chunk.document_name}\n"
+            f"{location_line}"
             f"Similarity: {chunk.similarity:.4f}\n"
             f"Text:\n{chunk.chunk_text}\n"
         )
@@ -109,7 +145,8 @@ def build_messages(question: str, chunks: list[SearchResult]) -> list[dict[str, 
         "1. Answer in the same language as the user if possible.\n"
         "2. Prefer the retrieved context over general knowledge.\n"
         "3. If the context is incomplete, say what is missing.\n"
-        "4. Do not add a separate sources section at the end; it will be added by the application."
+        "4. Use the provided document names and page locations internally to stay grounded.\n"
+        "5. Do not add a separate sources section at the end; it will be added by the application."
     )
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -145,11 +182,17 @@ async def stream_completion(messages: list[dict[str, str]]):
 
 
 def get_source_links(chunks: list[SearchResult]) -> list[SourceLink]:
-    document_names: list[str] = []
-    for chunk in chunks:
-        if chunk.document_name not in document_names:
-            document_names.append(chunk.document_name)
+    seen_citations: set[tuple[str, int | None, int | None]] = set()
+    citation_order: list[tuple[str, int | None, int | None]] = []
 
+    for chunk in chunks:
+        citation_key = (chunk.document_name, chunk.page_start, chunk.page_end)
+        if citation_key in seen_citations:
+            continue
+        seen_citations.add(citation_key)
+        citation_order.append(citation_key)
+
+    document_names = list({document_name for document_name, _, _ in citation_order})
     if not document_names:
         return []
 
@@ -169,14 +212,22 @@ def get_source_links(chunks: list[SearchResult]) -> list[SourceLink]:
             rows = cur.fetchall()
 
     url_by_name = {document_name: source_url for document_name, source_url in rows}
-    return [SourceLink(document_name=name, source_url=url_by_name.get(name)) for name in document_names]
+    return [
+        SourceLink(
+            document_name=document_name,
+            source_url=url_by_name.get(document_name),
+            page_start=page_start,
+            page_end=page_end,
+        )
+        for document_name, page_start, page_end in citation_order
+    ]
 
 
 def summarize_sources(chunks: list[SearchResult]) -> str:
     links = get_source_links(chunks)
     if not links:
         return "No sources retrieved"
-    return ", ".join(link.document_name for link in links)
+    return ", ".join(link.display_name for link in links)
 
 
 def save_answer_record(
