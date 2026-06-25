@@ -1,3 +1,33 @@
-{"id":"case-1","question":"What does the document say about биржевые облигации registration and circulation?","expected_documents":["Poryadok_Registratsii_razmescheniya_i_obrascheniya_birzhevyh_obligatsiy"],"reference_answer":"The answer should describe the rules or procedure for registration, placement, and circulation of exchange bonds, and it should stay grounded in the retrieved regulation.","metadata":{"category":"capital-markets"}}
-{"id":"case-2","question":"What are the membership rules in RFB according to the membership regulation?","expected_documents":["polojenie_o_chlenstve_rfb"],"reference_answer":"The answer should explain the membership rules, requirements, or governance described in the membership regulation.","metadata":{"category":"membership"}}
-{"id":"case-3","question":"What do the trading rules document and the VTP rules cover?","expected_documents":["pravila_torgov_20052025","pravila_vtp_20052025"],"reference_answer":"The answer should distinguish what is covered by the trading rules and what is covered by the VTP rules, based on the retrieved sources.","metadata":{"category":"trading-rules"}}
+{
+    "id":"case-1",
+    "question":"What does the document say about биржевые облигации registration and circulation?",
+    "expected_documents":["Poryadok_Registratsii_razmescheniya_i_obrascheniya_birzhevyh_obligatsiy"],
+    "reference_answer":"The answer should describe the rules or procedure for registration, placement, and circulation of exchange bonds, and it should stay grounded in the retrieved regulation.",
+    "metadata":{
+        "category":"capital-markets"
+    }
+}
+
+{
+    "id":"case-2",
+    "question":"What are the membership rules in RFB according to the membership regulation?",
+    "expected_documents":[
+        "polojenie_o_chlenstve_rfb"
+    ],
+    "reference_answer":"The answer should explain the membership rules, requirements, or governance described in the membership regulation.",
+    "metadata":{
+        "category":"membership"
+        }
+}
+
+{
+    "id":"case-3",
+    "question":"What do the trading rules document and the VTP rules cover?",
+    "expected_documents":[
+        "pravila_torgov_20052025","pravila_vtp_20052025"
+    ],
+    "reference_answer":"The answer should distinguish what is covered by the trading rules and what is covered by the VTP rules, based on the retrieved sources.",
+    "metadata":{
+        "category":"trading-rules"
+    }
+}
