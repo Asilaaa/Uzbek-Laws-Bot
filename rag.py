@@ -13,6 +13,7 @@ from common import (
     ensure_schema,
     get_async_openai_client,
     get_connection,
+    get_openai_client,
 )
 
 RAG_TOP_K = int(os.getenv("RAG_TOP_K", "5"))
@@ -114,6 +115,16 @@ def build_messages(question: str, chunks: list[SearchResult]) -> list[dict[str, 
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_prompt},
     ]
+
+
+def generate_answer(messages: list[dict[str, str]]) -> str:
+    client = get_openai_client()
+    response = client.chat.completions.create(
+        model=CHAT_MODEL,
+        messages=messages,
+        temperature=0.2,
+    )
+    return (response.choices[0].message.content or "").strip()
 
 
 async def stream_completion(messages: list[dict[str, str]]):

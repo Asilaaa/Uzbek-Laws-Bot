@@ -12,6 +12,9 @@ venv/
 # Local config
 .env
 
+# Evaluation outputs
+evals/results/
+
 # OS/editor
 .DS_Store
 *.swp
